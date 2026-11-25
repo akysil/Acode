@@ -13,7 +13,9 @@ import {
 	blurEditorIfReadOnly,
 	createEditorReadOnlyExtension,
 } from "cm/editorReadOnly";
+import { detectEol } from "cm/editorUtils";
 import tag from "html-tag-js";
+import lineEnding from "lib/lineEnding";
 import { readRemoteFilePreview } from "utils/remoteFilePreview";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadSourceModule } from "../helpers/loadSourceModule";
@@ -109,6 +111,7 @@ function setup() {
 	const toast = vi.fn(),
 		log = vi.fn();
 	const confirm = vi.fn(async () => false);
+	const prompt = vi.fn(async () => "");
 	const error = vi.fn();
 	const helpers = {
 		normalizeMtime: (value) => value ?? null,
@@ -117,6 +120,7 @@ function setup() {
 		getIconForFile: () => "file",
 		getVirtualPath: (value) => value,
 		fixFilename: (value) => value,
+		uuid: () => "promoted",
 	};
 	const selectLocation = vi.fn(async () => ({
 		val: { url: "file:///export" },
@@ -126,13 +130,14 @@ function setup() {
 		{
 			fileSystem: filesystem,
 			"@codemirror/state": { Text },
-			"cm/editorUtils": { getDocText: (doc) => doc.toString() },
+			"cm/editorUtils": { detectEol, getDocText: (doc) => doc.toString() },
 			"components/toast": toast,
 			"dialogs/confirm": confirm,
-			"dialogs/prompt": async () => "",
+			"dialogs/prompt": prompt,
 			"dialogs/select": {},
 			"lib/recents": {
 				select: selectLocation,
+				addFile: vi.fn(),
 				addFolder: vi.fn(),
 			},
 			"pages/fileBrowser": {},
@@ -140,7 +145,8 @@ function setup() {
 			"utils/Url": url,
 			"./config": {},
 			"./editorFile": {},
-			"./openFolder": {},
+			"./lineEnding": lineEnding,
+			"./openFolder": { find: () => null },
 			"./settings": settings,
 		},
 		{ editorManager: manager, strings: {} },
@@ -168,7 +174,7 @@ function setup() {
 			...unused,
 			fileSystem: filesystem,
 			"@codemirror/state": { EditorState, EditorSelection },
-			"cm/editorUtils": { getDocText: (doc) => doc.toString() },
+			"cm/editorUtils": { detectEol, getDocText: (doc) => doc.toString() },
 			"cm/modelist": {
 				getModeForPath: () => "text",
 				getMode: () => ({ name: "text" }),
@@ -186,6 +192,7 @@ function setup() {
 			"utils/remoteFilePreview": { readRemoteFilePreview },
 			"utils/helpers": helpers,
 			"./config": { DEFAULT_FILE_SESSION: "default" },
+			"./lineEnding": lineEnding,
 			"./loadPlugins": { isInitialPluginLoadComplete: () => false },
 			"./settings": settings,
 			"./saveFile": saveFile,
@@ -205,11 +212,17 @@ function setup() {
 	};
 	const { default: restoreFiles } = loadSourceModule(
 		"src/lib/restoreFiles.js",
-		{ fileSystem: filesystem, "./editorFile": EditorFile },
+		{
+			fileSystem: filesystem,
+			"./editorFile": EditorFile,
+			"./lineEnding": lineEnding,
+		},
 	);
 	return {
 		AUTO_SAVE,
+		EditorFile,
 		confirm,
+		prompt,
 		error,
 		stat,
 		cache,
@@ -538,6 +551,316 @@ it("allows unchanged-source edits and stops failed or obsolete source verificati
 	expect(f.cache.has(file.cacheFile)).toBe(false);
 });
 
+function loadEolHelpers(f) {
+	const { default: checkFiles } = loadSourceModule(
+		"src/lib/checkFiles.js",
+		{
+			fileSystem: f.fs,
+			"@codemirror/state": { Text },
+			"cm/editorUtils": { detectEol },
+			"dialogs/alert": vi.fn(),
+			"dialogs/confirm": f.confirm,
+			"utils/helpers": { getStatMtime: () => null },
+			"./lineEnding": lineEnding,
+		},
+		{ editorManager: f.manager, strings: {}, app: { focus: vi.fn() } },
+	);
+	const storage = {};
+	const { default: saveState } = loadSourceModule(
+		"src/lib/saveState.js",
+		{
+			"cm/editorUtils": {
+				getAllFolds: () => [],
+				getScrollPosition: vi.fn(() => ({})),
+				getSelection: vi.fn(),
+			},
+			"./config": { DEFAULT_FILE_SESSION: "default" },
+			"./lineEnding": lineEnding,
+			"./openFolder": { addedFolder: [] },
+			"./settings": { value: { rememberFiles: true } },
+		},
+		{
+			window: { editorManager: f.manager },
+			editorManager: f.manager,
+			localStorage: storage,
+		},
+	);
+	return {
+		checkFiles: async () => {
+			// An inactive tab is reloaded through its stored session.
+			f.manager.activeFile = null;
+			f.manager.editor = { getCursorPosition: () => ({}), gotoLine: vi.fn() };
+			for (const file of f.manager.files) file.makeActive = vi.fn();
+			await checkFiles();
+			delete f.manager.editor;
+		},
+		persist: () => {
+			saveState();
+			return JSON.parse(storage.files);
+		},
+	};
+}
+
+it("saves the opened line ending, writes both switched line endings, and keeps a saved CRLF file clean", async () => {
+	const f = setup();
+	const { checkFiles } = loadEolHelpers(f);
+	f.cache.set("file:///local.js", "a\r\nb\r\n");
+	await f.restoreFiles([
+		{ id: "crlf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	expect(file.eol).toBe("windows");
+	file.session.setValue("a\nb\nc\n");
+	expect(await file.save()).toBe(true);
+	expect(f.cache.get(file.uri)).toBe("a\r\nb\r\nc\r\n");
+	for (const [eol, text] of [
+		["unix", "a\nb\nc\n"],
+		["windows", "a\r\nb\r\nc\r\n"],
+	]) {
+		file.eol = eol;
+		expect(file.isUnsaved).toBe(true);
+		expect(await file.save()).toBe(true);
+		expect(f.cache.get(file.uri)).toBe(text);
+		expect(file.isUnsaved).toBe(false);
+	}
+	await checkFiles();
+	expect(f.confirm).not.toHaveBeenCalled();
+
+	// A switch made while the write is pending is kept after it completes.
+	file.eol = "unix";
+	f.write.mockImplementationOnce(async (uri, text) => {
+		file.eol = "windows";
+		f.cache.set(uri, text);
+	});
+	expect(await file.save()).toBe(true);
+	expect(f.cache.get(file.uri)).toBe("a\nb\nc\n");
+	expect(file.eol).toBe("windows");
+	expect(file.isUnsaved).toBe(true);
+});
+
+it("takes the line ending from an accepted reload and refuses to overwrite a line-ending-only change", async () => {
+	const f = setup();
+	const { checkFiles } = loadEolHelpers(f);
+	f.cache.set("file:///local.js", "a\r\nb\r\n");
+	await f.restoreFiles([
+		{ id: "crlf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	file.eol = "windows";
+	f.cache.set(file.uri, "a\nb\n");
+	f.confirm.mockResolvedValueOnce(true);
+	await checkFiles();
+	expect(f.confirm).toHaveBeenCalledOnce();
+	expect(file.eol).toBe("unix");
+	expect(file.isUnsaved).toBe(false);
+	file.session.setValue("a\nb\nc\n");
+	expect(await file.save()).toBe(true);
+	expect(f.cache.get(file.uri)).toBe("a\nb\nc\n");
+
+	f.cache.set(file.uri, "a\r\nb\r\nc\r\n");
+	file.session.setValue("my edit\n");
+	expect(await file.save()).toBe(false);
+	expect(f.confirm).toHaveBeenCalledTimes(2);
+	expect(f.cache.get(file.uri)).toBe("a\r\nb\r\nc\r\n");
+
+	// A matching mtime does not hide the change for a dirty cached tab.
+	const g = setup();
+	g.stat.mockResolvedValue({ modifiedDate: 5 });
+	g.cache.set(file.uri, "a\nb\n");
+	g.cache.set("file:///cache/dirty", "my edit\n");
+	await g.restoreFiles([
+		{
+			id: "dirty",
+			uri: file.uri,
+			filename: "local.js",
+			isUnsaved: true,
+			savedMtime: 5,
+			eol: "windows",
+			savedEol: "windows",
+		},
+	]);
+	expect(await g.manager.files[0].save()).toBe(false);
+	expect(g.confirm).toHaveBeenCalledOnce();
+	expect(g.cache.get(file.uri)).toBe("a\nb\n");
+});
+
+it("saves with the line ending of a reload accepted while the save reads the source", async () => {
+	const f = setup();
+	const { checkFiles } = loadEolHelpers(f);
+	f.cache.set("file:///local.js", "a\r\nb\r\n");
+	await f.restoreFiles([
+		{ id: "crlf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	f.cache.set(file.uri, "a\nb\n");
+	f.confirm.mockResolvedValue(true);
+	const read = f.read.getMockImplementation();
+	f.read.mockImplementationOnce(async (uri, encoding) => {
+		await checkFiles();
+		return read(uri, encoding);
+	});
+	expect(await file.save()).toBe(true);
+	expect(f.confirm).toHaveBeenCalledOnce();
+	expect(file.eol).toBe("unix");
+	expect(f.cache.get(file.uri)).toBe("a\nb\n");
+});
+
+it("keeps a pending line-ending switch across restarts and saves legacy tabs with the source line ending", async () => {
+	const f = setup();
+	const { persist } = loadEolHelpers(f);
+	f.cache.set("file:///local.js", "a\nb\n");
+	await f.restoreFiles([
+		{ id: "lf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	await file.flushCacheWrite();
+	file.eol = "windows";
+	const pending = persist();
+	let records = pending;
+	for (const cached of [false, true]) {
+		const g = setup();
+		g.cache.set(file.uri, "a\nb\n");
+		if (cached) g.cache.set(file.cacheFile, "a\nb\n");
+		await g.restoreFiles(records);
+		const restored = g.manager.files[0];
+		expect(restored.eol).toBe("windows");
+		expect(restored.isUnsaved).toBe(true);
+		restored.eol = "unix";
+		expect(restored.isUnsaved).toBe(false);
+		restored.eol = "windows";
+		expect(await restored.save()).toBe(true);
+		expect(g.cache.get(file.uri)).toBe("a\r\nb\r\n");
+		if (cached) records = loadEolHelpers(g).persist();
+	}
+	const saved = setup();
+	saved.cache.set(file.cacheFile, "a\nb\n");
+	await saved.restoreFiles(records);
+	expect(saved.manager.files[0].eol).toBe("windows");
+	expect(saved.manager.files[0].refreshUnsavedState()).toBe(false);
+
+	// Without the cache, a source that already has the pending line ending is
+	// clean, so a later external change still prompts.
+	const c = setup();
+	c.cache.set(file.uri, "a\r\nb\r\n");
+	await c.restoreFiles(pending);
+	expect(c.manager.files[0].eol).toBe("windows");
+	expect(c.manager.files[0].isUnsaved).toBe(false);
+	c.cache.set(file.uri, "a\nb\n");
+	await loadEolHelpers(c).checkFiles();
+	expect(c.confirm).toHaveBeenCalledOnce();
+
+	// Sessions saved before line endings were recorded only have the cache.
+	const g = setup();
+	g.cache.set(file.uri, "a\r\nb\r\n");
+	g.cache.set("file:///cache/legacy", "a\nb\n");
+	await g.restoreFiles([
+		{ id: "legacy", uri: file.uri, filename: "local.js", isUnsaved: false },
+	]);
+	const legacy = g.manager.files[0];
+	legacy.session.setValue("a\nb\nc\n");
+	expect(await legacy.save()).toBe(true);
+	expect(g.cache.get(file.uri)).toBe("a\r\nb\r\nc\r\n");
+	expect(legacy.eol).toBe("windows");
+	legacy.eol = "unix";
+	expect(await legacy.save()).toBe(true);
+	expect(g.cache.get(file.uri)).toBe("a\nb\nc\n");
+
+	// A choice on an older tab wins; Replace in Files text keeps the source's.
+	const h = setup();
+	h.cache.set(file.uri, "a\r\nb\r\n");
+	h.cache.set("file:///cache/legacy", "a\nb\n");
+	h.cache.set("file:///other.js", "a\nb\n");
+	await h.restoreFiles([
+		{ id: "legacy", uri: file.uri, filename: "local.js" },
+		{
+			id: "replaced",
+			uri: "file:///other.js",
+			filename: "other.js",
+			text: "x\r\ny\n",
+			isUnsaved: true,
+			savedMtime: 5,
+		},
+	]);
+	h.stat.mockResolvedValue({ modifiedDate: 5 });
+	h.manager.files[0].eol = "unix";
+	// Save All only saves tabs marked unsaved.
+	expect(h.manager.files[0].isUnsaved).toBe(true);
+	expect(await h.manager.files[0].save()).toBe(true);
+	expect(h.cache.get(file.uri)).toBe("a\nb\n");
+	expect(await h.manager.files[1].save()).toBe(true);
+	expect(h.cache.get("file:///other.js")).toBe("x\ny\n");
+
+	// Switching the initial untitled tab makes it part of the session.
+	const untitled = new h.EditorFile();
+	const defaultId = untitled.id;
+	untitled.eol = "unix";
+	expect(untitled.isUnsaved).toBe(false);
+	expect(untitled.id).toBe(defaultId);
+	untitled.eol = "windows";
+	expect(untitled.isUnsaved).toBe(true);
+	const record = loadEolHelpers(h)
+		.persist()
+		.find((item) => item.id === untitled.id);
+	expect(record).toMatchObject({ eol: "windows" });
+});
+
+it("keeps the source line ending when Save As copies a tab restored from an older session", async () => {
+	const f = setup();
+	f.cache.set("file:///local.js", "a\r\nb\r\n");
+	f.cache.set("file:///cache/legacy", "a\nb\n");
+	await f.restoreFiles([
+		{ id: "legacy", uri: "file:///local.js", filename: "local.js" },
+	]);
+	expect(f.read.mock.calls.map(([uri]) => uri)).toEqual([
+		"file:///cache/legacy",
+	]);
+	f.prompt.mockResolvedValueOnce("local.js");
+	// The new URI gives the tab an id from Acode's String#hashCode, which the
+	// realm EditorFile runs in doesn't have.
+	new f.EditorFile.constructor("String.prototype.hashCode = () => 1")();
+	expect(await f.manager.files[0].saveAs()).toBe(true);
+	expect(f.cache.get("file:///export/local.js")).toBe("a\r\nb\r\n");
+});
+
+it("drops a pending line-ending switch when the file is reopened with another encoding", async () => {
+	const f = setup();
+	f.cache.set("file:///local.js", "a\nb\n");
+	await f.restoreFiles([
+		{ id: "lf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	await file.load();
+	file.eol = "windows";
+	const { reopenWithNewEncoding } = loadSourceModule(
+		"src/palettes/changeEncoding/index.js",
+		{
+			fileSystem: f.fs,
+			"cm/editorUtils": { detectEol },
+			"components/palette": vi.fn(),
+			"dialogs/confirm": async () => true,
+			"lib/lineEnding": lineEnding,
+			"utils/encodings": {},
+		},
+		{
+			editorManager: {
+				...f.manager,
+				activeFile: file,
+				editor: {
+					getCursorPosition: () => ({}),
+					moveCursorToPosition: vi.fn(),
+				},
+			},
+			strings: { "change encoding": "" },
+		},
+	);
+	await reopenWithNewEncoding("utf-8");
+	expect(file.eol).toBe("unix");
+	expect(file.isUnsaved).toBe(false);
+	file.session.setValue("a\nb\nc\n");
+	expect(await file.save()).toBe(true);
+	expect(f.cache.get(file.uri)).toBe("a\nb\nc\n");
+});
+
 it("continues resume checks past unavailable, failing, and read-only HTTP providers", async () => {
 	const f = setup();
 	f.cache.set("file:///cache/offline", "cached");
@@ -580,9 +903,11 @@ it("continues resume checks past unavailable, failing, and read-only HTTP provid
 		{
 			fileSystem: f.fs,
 			"@codemirror/state": { Text },
+			"cm/editorUtils": { detectEol },
 			"dialogs/alert": vi.fn(),
 			"dialogs/confirm": f.confirm,
 			"utils/helpers": { getStatMtime: () => null },
+			"./lineEnding": lineEnding,
 		},
 		{ editorManager: f.manager, strings: {}, console: { warn } },
 	);

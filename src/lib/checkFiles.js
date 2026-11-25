@@ -1,8 +1,10 @@
 import fsOperation from "fileSystem";
 import { Text } from "@codemirror/state";
+import { detectEol } from "cm/editorUtils";
 import alert from "dialogs/alert";
 import confirm from "dialogs/confirm";
 import helpers from "utils/helpers";
+import lineEnding from "./lineEnding";
 
 let checkFileEnabled = true;
 
@@ -102,10 +104,14 @@ export default async function checkFiles() {
 
 			const text = await fs.readFile(file.encoding);
 			if (!file.tab) return;
-			const diskDoc = Text.of(String(text ?? "").split("\n"));
+			const diskDoc = Text.of(String(text ?? "").split(/\r\n?|\n/));
 			const currentDoc = file.session?.doc;
+			const diskEol = detectEol(text);
+			// Text.eq ignores line breaks, so compare the line ending separately.
+			const savedEol = lineEnding.saved(file);
+			const sameEol = !diskEol || !savedEol || diskEol === savedEol;
 
-			if (!currentDoc?.eq?.(diskDoc)) {
+			if (!sameEol || !currentDoc?.eq?.(diskDoc)) {
 				try {
 					const confirmation = await confirm(
 						strings.warning,
@@ -120,6 +126,7 @@ export default async function checkFiles() {
 					file.markChanged = false;
 					try {
 						file.session.setValue(text);
+						lineEnding.setSaved(file, diskEol, true);
 						file.markLoaded({ mtime });
 					} finally {
 						file.markChanged = true;

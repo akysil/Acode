@@ -5,7 +5,7 @@ import {
 	focusEditorIfEditable,
 	reconfigureEditorReadOnly,
 } from "cm/editorReadOnly";
-import { clearSelection, getDocText } from "cm/editorUtils";
+import { clearSelection, detectEol, getDocText } from "cm/editorUtils";
 import { getMode, getModeForPath } from "cm/modelist";
 import quickTools from "components/quickTools";
 import Sidebar from "components/sidebar";
@@ -25,6 +25,7 @@ import Path from "utils/Path";
 import { readRemoteFilePreview } from "utils/remoteFilePreview";
 import Url from "utils/Url";
 import config from "./config";
+import lineEnding from "./lineEnding";
 import { isInitialPluginLoadComplete } from "./loadPlugins";
 import openFolder from "./openFolder";
 import run from "./run";
@@ -701,6 +702,12 @@ export default class EditorFile {
 			options?.text !== undefined ||
 			options?.isUnsaved !== undefined ||
 			this.#id === config.DEFAULT_FILE_SESSION;
+		if (!options?.uri) {
+			// Nothing on disk yet, so there is no line ending to keep.
+			lineEnding.setSaved(this, null);
+		} else if (options?.text !== undefined && !options.isUnsaved) {
+			lineEnding.setSaved(this, detectEol(options.text));
+		}
 		this.isUnsaved = options?.isUnsaved ?? this.hasUnsavedChanges();
 
 		if (options?.encoding) {
@@ -948,11 +955,7 @@ export default class EditorFile {
 	 * End of line
 	 */
 	get eol() {
-		const { doc } = this.session;
-		for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
-			if (doc.line(lineNumber).text.includes("\r")) return "windows";
-		}
-		return "unix";
+		return lineEnding.choice(this) ?? lineEnding.saved(this) ?? "unix";
 	}
 
 	/**
@@ -961,17 +964,16 @@ export default class EditorFile {
 	 */
 	set eol(value) {
 		if (this.type !== "editor") return;
-		if (this.eol === value) return;
-		let text = getDocText(this.session.doc);
-
-		if (value === "windows") {
-			text = text.replace(/\n(?<!\r\n)/g, "\r\n");
-		} else {
-			text = text.replace(/\r/g, "");
+		if (lineEnding.choice(this) === value) return;
+		// CodeMirror normalizes line breaks to "\n", so the line ending is
+		// kept here and applied when the file is saved.
+		lineEnding.choose(this, value);
+		if (this.id === config.DEFAULT_FILE_SESSION && this.hasUnsavedChanges()) {
+			this.id = helpers.uuid();
 		}
-
-		// Update the document in the session
-		this.session.setValue(text);
+		this.refreshUnsavedState();
+		editorManager.onupdate("file-changed");
+		editorManager.emit("update", "file-changed");
 	}
 
 	/**
@@ -1081,6 +1083,12 @@ export default class EditorFile {
 
 	hasUnsavedChanges() {
 		if (this.type !== "editor") return false;
+		const eol = lineEnding.choice(this);
+		const savedEol = lineEnding.saved(this);
+		// A choice over a disk line ending not read yet still has to be saved.
+		if (eol && (savedEol === undefined || eol !== (savedEol ?? "unix"))) {
+			return true;
+		}
 		const currentDoc = this.#rawSession?.doc;
 		if (currentDoc && this.#savedDoc) {
 			return (
@@ -1926,7 +1934,11 @@ export default class EditorFile {
 				// Recovery data is the document, not a newly verified disk snapshot.
 				this.#savedDoc = isUnsaved ? null : this.#rawSession.doc;
 			} else {
+				lineEnding.setSaved(this, detectEol(value));
 				this.markLoaded({ mtime: loadedMtime, isUnsaved, savedDoc });
+				// Without recovery text, only a pending line ending can differ
+				// from the source, and the source may already have it.
+				if (lineEnding.choice(this)) this.refreshUnsavedState();
 			}
 			this.#loadOptions = null;
 			this.markChanged = true;

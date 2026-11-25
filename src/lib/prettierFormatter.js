@@ -127,9 +127,6 @@ async function resolvePrettierConfig(file) {
 	const overrides = appSettings?.value?.prettier || {};
 	const projectConfig = await loadProjectConfig(file);
 	const result = { ...overrides, ...(projectConfig || {}) };
-	if (file?.eol && result.endOfLine == null) {
-		result.endOfLine = file.eol === "windows" ? "crlf" : "lf";
-	}
 	if (result.useTabs == null) {
 		result.useTabs = !appSettings?.value?.softTab;
 	}

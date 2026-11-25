@@ -2,6 +2,7 @@
 
 import { EditorSelection, EditorState } from "@codemirror/state";
 import tag from "html-tag-js";
+import lineEnding from "lib/lineEnding";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadSourceModule } from "../helpers/loadSourceModule";
 
@@ -52,7 +53,10 @@ function setup() {
 			...defaults,
 			"components/sidebar": { hide: vi.fn() },
 			"@codemirror/state": { EditorState, EditorSelection },
-			"cm/editorUtils": { getDocText: (doc) => doc.toString() },
+			"cm/editorUtils": {
+				detectEol: () => null,
+				getDocText: (doc) => doc.toString(),
+			},
 			"cm/modelist": {
 				getModeForPath: () => "text",
 				getMode: () => ({
@@ -74,6 +78,7 @@ function setup() {
 				getIconForFile: () => "file",
 			},
 			"./config": { DEFAULT_FILE_SESSION: "default" },
+			"./lineEnding": lineEnding,
 			"./settings": { value: {}, on: vi.fn(), off: vi.fn() },
 			"./saveFile": write,
 		},

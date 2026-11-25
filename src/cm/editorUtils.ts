@@ -41,6 +41,18 @@ export function getDocText(
 }
 
 /**
+ * Detects the line ending from the first line break of the text.
+ * Returns null when the text has no line break.
+ */
+export function detectEol(
+	text: string | null | undefined,
+): "windows" | "unix" | null {
+	const index = text?.indexOf("\n") ?? -1;
+	if (index < 0) return null;
+	return text?.[index - 1] === "\r" ? "windows" : "unix";
+}
+
+/**
  * Get all folded ranges from CodeMirror editor state
  */
 export function getAllFolds(state: EditorState): FoldSpan[] {

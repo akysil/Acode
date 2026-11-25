@@ -1,6 +1,8 @@
 import fsOperation from "fileSystem";
+import { detectEol } from "cm/editorUtils";
 import palette from "components/palette";
 import confirm from "dialogs/confirm";
+import lineEnding from "lib/lineEnding";
 import encodings from "utils/encodings";
 
 export default function changeEncoding() {
@@ -36,7 +38,8 @@ export async function reopenWithNewEncoding(encoding) {
 
 	file.encoding = encoding;
 	file.session.setValue(text);
-	file.isUnsaved = false;
+	lineEnding.setSaved(file, detectEol(text), true);
+	file.markLoaded({ mtime: file.savedMtime });
 	file.markChanged = false;
 	editor.moveCursorToPosition(cursorPosition);
 
