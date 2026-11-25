@@ -103,6 +103,16 @@ function isTouchDevice() {
 }
 
 /**
+ * Detects the line ending from the first line break of the text.
+ * @param {string} [text]
+ * @returns {'windows'|'unix'}
+ */
+function detectEol(text) {
+	const index = text?.indexOf("\n") ?? -1;
+	return index > 0 && text[index - 1] === "\r" ? "windows" : "unix";
+}
+
+/**
  * Creates a Proxy around an EditorState that provides Ace-compatible methods.
  * @param {EditorState} state - The raw CodeMirror EditorState
  * @param {EditorFile} file - The parent EditorFile instance
@@ -333,6 +343,7 @@ function maybeRecommendLanguageModeExtension(file, modeInfo) {
  * @property {boolean} [deletedFile] file do not exists at source
  * @property {'single' | 'tree'} [SAFMode] storage access framework mode
  * @property {string} [encoding] text encoding
+ * @property {'windows'|'unix'} [eol] line ending used on save
  * @property {object} [cursorPos] cursor position
  * @property {number} [scrollLeft] scroll left
  * @property {number} [scrollTop] scroll top
@@ -475,6 +486,12 @@ export default class EditorFile {
 	#cacheWritePromise = null;
 	#hasCache = false;
 	#savedDoc = null;
+	/**
+	 * Line ending written on save; the editor document always uses "\n".
+	 * @type {'windows'|'unix'}
+	 */
+	#eol = "unix";
+	#savedEol = "unix";
 	/**
 	 * Whether to show run button or not
 	 */
@@ -706,6 +723,7 @@ export default class EditorFile {
 		if (options?.encoding) {
 			this.encoding = options.encoding;
 		}
+		this.#eol = this.#savedEol = options?.eol || detectEol(options?.text);
 
 		// if options contains text property then there is no need to load
 		// set loaded true
@@ -948,11 +966,7 @@ export default class EditorFile {
 	 * End of line
 	 */
 	get eol() {
-		const { doc } = this.session;
-		for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
-			if (doc.line(lineNumber).text.includes("\r")) return "windows";
-		}
-		return "unix";
+		return this.#eol;
 	}
 
 	/**
@@ -961,17 +975,13 @@ export default class EditorFile {
 	 */
 	set eol(value) {
 		if (this.type !== "editor") return;
-		if (this.eol === value) return;
-		let text = getDocText(this.session.doc);
-
-		if (value === "windows") {
-			text = text.replace(/\n(?<!\r\n)/g, "\r\n");
-		} else {
-			text = text.replace(/\r/g, "");
-		}
-
-		// Update the document in the session
-		this.session.setValue(text);
+		if (this.#eol === value) return;
+		// CodeMirror normalizes line breaks to "\n", so the line ending is
+		// kept here and applied when the file is saved.
+		this.#eol = value;
+		this.markEdited({ exact: true });
+		editorManager.onupdate("file-changed");
+		editorManager.emit("update", "file-changed");
 	}
 
 	/**
@@ -1081,6 +1091,7 @@ export default class EditorFile {
 
 	hasUnsavedChanges() {
 		if (this.type !== "editor") return false;
+		if (this.#eol !== this.#savedEol) return true;
 		const currentDoc = this.#rawSession?.doc;
 		if (currentDoc && this.#savedDoc) {
 			return (
@@ -1130,8 +1141,9 @@ export default class EditorFile {
 		if (!this.#isUnsaved) this.isUnsaved = true;
 	}
 
-	markSaved({ mtime, savedDoc, savedVersion } = {}) {
+	markSaved({ mtime, savedDoc, savedVersion, savedEol } = {}) {
 		const normalizedMtime = helpers.normalizeMtime(mtime);
+		this.#savedEol = savedEol || this.#eol;
 		this.savedVersion = Number.isFinite(savedVersion)
 			? savedVersion
 			: this.docVersion;
@@ -1905,6 +1917,7 @@ export default class EditorFile {
 					const diskValue = await file.readFile(this.encoding);
 					savedDoc = EditorState.create({ doc: diskValue }).doc;
 					value = diskValue;
+					this.#eol = this.#savedEol = detectEol(diskValue);
 				} else {
 					window.log("error", "unable to load file");
 					throw new Error("Unable to load file");

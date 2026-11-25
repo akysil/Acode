@@ -106,6 +106,7 @@ export default function saveState() {
 			scrollLeft,
 			editable: file.editable,
 			encoding: file.encoding,
+			eol: file.eol,
 			render: activeFile?.id === file.id,
 			folds: file.restoredFolds ?? getAllFolds(file.session),
 		};

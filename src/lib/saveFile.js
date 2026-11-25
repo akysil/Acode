@@ -186,7 +186,9 @@ async function saveFile(
 
 		const savedDoc = file.session?.doc || null;
 		const savedVersion = file.docVersion;
-		const data = getDocText(savedDoc);
+		const savedEol = file.eol;
+		let data = getDocText(savedDoc);
+		if (savedEol === "windows") data = data.replace(/\n/g, "\r\n");
 		if (!isCurrent()) return false;
 
 		await fileOnDevice.writeFile(data, encoding);
@@ -197,6 +199,7 @@ async function saveFile(
 			mtime: helpers.getStatMtime(stat),
 			savedDoc,
 			savedVersion,
+			savedEol,
 		});
 		saved = true;
 
