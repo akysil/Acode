@@ -52,7 +52,10 @@ function setup() {
 			...defaults,
 			"components/sidebar": { hide: vi.fn() },
 			"@codemirror/state": { EditorState, EditorSelection },
-			"cm/editorUtils": { getDocText: (doc) => doc.toString() },
+			"cm/editorUtils": {
+				detectEol: () => null,
+				getDocText: (doc) => doc.toString(),
+			},
 			"cm/modelist": {
 				getModeForPath: () => "text",
 				getMode: () => ({

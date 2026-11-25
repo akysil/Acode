@@ -1,6 +1,6 @@
 import fsOperation, { hasProvider } from "fileSystem";
 import { Text } from "@codemirror/state";
-import { getDocText } from "cm/editorUtils";
+import { detectEol, getDocText } from "cm/editorUtils";
 import toast from "components/toast";
 import confirm from "dialogs/confirm";
 import prompt from "dialogs/prompt";
@@ -146,14 +146,18 @@ async function saveFile(
 		}
 		if (!fileOnDevice || !isCurrent()) return false;
 
+		let sourceEol = null;
 		if (!isSaveAs && !isNewFile) {
-			const source = Text.of(
-				(await fileOnDevice.readFile(encoding)).split(/\r\n?|\n/),
-			);
+			const sourceText = await fileOnDevice.readFile(encoding);
+			const source = Text.of(sourceText.split(/\r\n?|\n/));
 			if (!isCurrent()) return false;
-			let unchanged = source.eq(file.session.doc);
+			sourceEol = detectEol(sourceText);
+			// Text.eq ignores line breaks, so compare the line ending separately.
+			const sameEol =
+				!sourceEol || !file.savedEol || sourceEol === file.savedEol;
+			let unchanged = sameEol && source.eq(file.session.doc);
 			if (!unchanged && baseline) {
-				unchanged = source.eq(baseline);
+				unchanged = sameEol && source.eq(baseline);
 			} else if (!unchanged && file.savedMtime != null) {
 				const stat = await fileOnDevice.stat?.().catch(() => null);
 				if (!isCurrent()) return false;
@@ -186,7 +190,9 @@ async function saveFile(
 
 		const savedDoc = file.session?.doc || null;
 		const savedVersion = file.docVersion;
-		const savedEol = file.eol;
+		// A tab restored without line-ending info keeps the source's line ending.
+		const savedEol =
+			file.savedEol || file.eol !== "unix" ? file.eol : sourceEol || "unix";
 		let data = getDocText(savedDoc);
 		if (savedEol === "windows") data = data.replace(/\n/g, "\r\n");
 		if (!isCurrent()) return false;
