@@ -15,6 +15,7 @@ import {
 } from "cm/editorReadOnly";
 import { detectEol } from "cm/editorUtils";
 import tag from "html-tag-js";
+import lineEnding from "lib/lineEnding";
 import { readRemoteFilePreview } from "utils/remoteFilePreview";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadSourceModule } from "../helpers/loadSourceModule";
@@ -136,6 +137,7 @@ function setup() {
 			"dialogs/select": {},
 			"lib/recents": {
 				select: selectLocation,
+				addFile: vi.fn(),
 				addFolder: vi.fn(),
 			},
 			"pages/fileBrowser": {},
@@ -143,7 +145,8 @@ function setup() {
 			"utils/Url": url,
 			"./config": {},
 			"./editorFile": {},
-			"./openFolder": {},
+			"./lineEnding": lineEnding,
+			"./openFolder": { find: () => null },
 			"./settings": settings,
 		},
 		{ editorManager: manager, strings: {} },
@@ -189,6 +192,7 @@ function setup() {
 			"utils/remoteFilePreview": { readRemoteFilePreview },
 			"utils/helpers": helpers,
 			"./config": { DEFAULT_FILE_SESSION: "default" },
+			"./lineEnding": lineEnding,
 			"./loadPlugins": { isInitialPluginLoadComplete: () => false },
 			"./settings": settings,
 			"./saveFile": saveFile,
@@ -553,6 +557,7 @@ function loadEolHelpers(f) {
 			"dialogs/alert": vi.fn(),
 			"dialogs/confirm": f.confirm,
 			"utils/helpers": { getStatMtime: () => null },
+			"./lineEnding": lineEnding,
 		},
 		{ editorManager: f.manager, strings: {}, app: { focus: vi.fn() } },
 	);
@@ -566,6 +571,7 @@ function loadEolHelpers(f) {
 				getSelection: vi.fn(),
 			},
 			"./config": { DEFAULT_FILE_SESSION: "default" },
+			"./lineEnding": lineEnding,
 			"./openFolder": { addedFolder: [] },
 			"./settings": { value: { rememberFiles: true } },
 		},
@@ -684,7 +690,8 @@ it("keeps a pending line-ending switch across restarts and saves legacy tabs wit
 	const file = f.manager.files[0];
 	await file.flushCacheWrite();
 	file.eol = "windows";
-	let records = persist();
+	const pending = persist();
+	let records = pending;
 	for (const cached of [false, true]) {
 		const g = setup();
 		g.cache.set(file.uri, "a\nb\n");
@@ -705,6 +712,17 @@ it("keeps a pending line-ending switch across restarts and saves legacy tabs wit
 	await saved.restoreFiles(records);
 	expect(saved.manager.files[0].eol).toBe("windows");
 	expect(saved.manager.files[0].refreshUnsavedState()).toBe(false);
+
+	// Without the cache, a source that already has the pending line ending is
+	// clean, so a later external change still prompts.
+	const c = setup();
+	c.cache.set(file.uri, "a\r\nb\r\n");
+	await c.restoreFiles(pending);
+	expect(c.manager.files[0].eol).toBe("windows");
+	expect(c.manager.files[0].isUnsaved).toBe(false);
+	c.cache.set(file.uri, "a\nb\n");
+	await loadEolHelpers(c).checkFiles();
+	expect(c.confirm).toHaveBeenCalledOnce();
 
 	// Sessions saved before line endings were recorded only have the cache.
 	const g = setup();
@@ -740,6 +758,8 @@ it("keeps a pending line-ending switch across restarts and saves legacy tabs wit
 	]);
 	h.stat.mockResolvedValue({ modifiedDate: 5 });
 	h.manager.files[0].eol = "unix";
+	// Save All only saves tabs marked unsaved.
+	expect(h.manager.files[0].isUnsaved).toBe(true);
 	expect(await h.manager.files[0].save()).toBe(true);
 	expect(h.cache.get(file.uri)).toBe("a\nb\n");
 	expect(await h.manager.files[1].save()).toBe(true);
@@ -753,6 +773,24 @@ it("keeps a pending line-ending switch across restarts and saves legacy tabs wit
 		.persist()
 		.find((item) => item.id === untitled.id);
 	expect(record).toMatchObject({ eol: "windows" });
+});
+
+it("keeps the source line ending when Save As copies a tab restored from an older session", async () => {
+	const f = setup();
+	f.cache.set("file:///local.js", "a\r\nb\r\n");
+	f.cache.set("file:///cache/legacy", "a\nb\n");
+	await f.restoreFiles([
+		{ id: "legacy", uri: "file:///local.js", filename: "local.js" },
+	]);
+	expect(f.read.mock.calls.map(([uri]) => uri)).toEqual([
+		"file:///cache/legacy",
+	]);
+	f.prompt.mockResolvedValueOnce("local.js");
+	// The new URI gives the tab an id from Acode's String#hashCode, which the
+	// realm EditorFile runs in doesn't have.
+	new f.EditorFile.constructor("String.prototype.hashCode = () => 1")();
+	expect(await f.manager.files[0].saveAs()).toBe(true);
+	expect(f.cache.get("file:///export/local.js")).toBe("a\r\nb\r\n");
 });
 
 it("drops a pending line-ending switch when the file is reopened with another encoding", async () => {
@@ -771,6 +809,7 @@ it("drops a pending line-ending switch when the file is reopened with another en
 			"cm/editorUtils": { detectEol },
 			"components/palette": vi.fn(),
 			"dialogs/confirm": async () => true,
+			"lib/lineEnding": lineEnding,
 			"utils/encodings": {},
 		},
 		{
@@ -839,6 +878,7 @@ it("continues resume checks past unavailable, failing, and read-only HTTP provid
 			"dialogs/alert": vi.fn(),
 			"dialogs/confirm": f.confirm,
 			"utils/helpers": { getStatMtime: () => null },
+			"./lineEnding": lineEnding,
 		},
 		{ editorManager: f.manager, strings: {}, console: { warn } },
 	);

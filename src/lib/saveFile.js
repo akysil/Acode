@@ -11,6 +11,7 @@ import helpers from "utils/helpers";
 import Url from "utils/Url";
 import config from "./config";
 import EditorFile from "./editorFile";
+import lineEnding from "./lineEnding";
 import openFolder from "./openFolder";
 import appSettings from "./settings";
 
@@ -119,7 +120,25 @@ async function saveFile(
 	let saved = false;
 
 	try {
+		let sourceEol = null;
+		const savedEol = lineEnding.saved(file);
 		if (isSaveAs || newUrl) {
+			// A copy of a tab restored without line-ending info keeps the
+			// line ending of its source, when the source can be read.
+			if (
+				isSaveAs &&
+				file.uri &&
+				savedEol === undefined &&
+				!lineEnding.choice(file)
+			) {
+				try {
+					sourceEol = detectEol(await fsOperation(file.uri).readFile(encoding));
+				} catch {
+					// Without the source, the copy is written as before.
+				}
+				if (!isCurrent()) return false;
+			}
+
 			// if save as or new file
 			const fileUri = Url.join(newUrl, file.filename);
 			fileOnDevice = fsOperation(fileUri);
@@ -146,15 +165,13 @@ async function saveFile(
 		}
 		if (!fileOnDevice || !isCurrent()) return false;
 
-		let sourceEol = null;
 		if (!isSaveAs && !isNewFile) {
 			const sourceText = await fileOnDevice.readFile(encoding);
 			const source = Text.of(sourceText.split(/\r\n?|\n/));
 			if (!isCurrent()) return false;
 			sourceEol = detectEol(sourceText);
 			// Text.eq ignores line breaks, so compare the line ending separately.
-			const sameEol =
-				!sourceEol || !file.savedEol || sourceEol === file.savedEol;
+			const sameEol = !sourceEol || !savedEol || sourceEol === savedEol;
 			let unchanged = sameEol && source.eq(file.session.doc);
 			if (!unchanged && baseline) {
 				unchanged = sameEol && source.eq(baseline);
@@ -191,21 +208,23 @@ async function saveFile(
 		const savedDoc = file.session?.doc || null;
 		const savedVersion = file.docVersion;
 		// A tab restored without line-ending info keeps the source's line ending.
-		const savedEol =
-			file.savedEol === undefined ? sourceEol || "unix" : file.eol;
+		const eol =
+			lineEnding.choice(file) ??
+			(savedEol === undefined ? sourceEol : savedEol) ??
+			"unix";
 		let data = getDocText(savedDoc);
-		if (savedEol === "windows") data = data.replace(/\n/g, "\r\n");
+		if (eol === "windows") data = data.replace(/\n/g, "\r\n");
 		if (!isCurrent()) return false;
 
 		await fileOnDevice.writeFile(data, encoding);
 		if (!isCurrent()) return false;
 		const stat = await fileOnDevice.stat?.().catch(() => null);
 		if (!isCurrent()) return false;
+		lineEnding.setSaved(file, eol);
 		file.markSaved({
 			mtime: helpers.getStatMtime(stat),
 			savedDoc,
 			savedVersion,
-			savedEol,
 		});
 		saved = true;
 

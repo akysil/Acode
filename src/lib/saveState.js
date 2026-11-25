@@ -1,5 +1,6 @@
 import { getAllFolds, getScrollPosition, getSelection } from "cm/editorUtils";
 import config from "./config";
+import lineEnding from "./lineEnding";
 import { addedFolder } from "./openFolder";
 import appSettings from "./settings";
 
@@ -106,8 +107,8 @@ export default function saveState() {
 			scrollLeft,
 			editable: file.editable,
 			encoding: file.encoding,
-			eol: file.eol,
-			savedEol: file.savedEol,
+			eol: lineEnding.choice(file),
+			savedEol: lineEnding.saved(file),
 			render: activeFile?.id === file.id,
 			folds: file.restoredFolds ?? getAllFolds(file.session),
 		};

@@ -4,6 +4,7 @@ import { detectEol } from "cm/editorUtils";
 import alert from "dialogs/alert";
 import confirm from "dialogs/confirm";
 import helpers from "utils/helpers";
+import lineEnding from "./lineEnding";
 
 let checkFileEnabled = true;
 
@@ -107,7 +108,8 @@ export default async function checkFiles() {
 			const currentDoc = file.session?.doc;
 			const diskEol = detectEol(text);
 			// Text.eq ignores line breaks, so compare the line ending separately.
-			const sameEol = !diskEol || !file.savedEol || diskEol === file.savedEol;
+			const savedEol = lineEnding.saved(file);
+			const sameEol = !diskEol || !savedEol || diskEol === savedEol;
 
 			if (!sameEol || !currentDoc?.eq?.(diskDoc)) {
 				try {
@@ -124,7 +126,8 @@ export default async function checkFiles() {
 					file.markChanged = false;
 					try {
 						file.session.setValue(text);
-						file.markLoaded({ mtime, savedEol: diskEol });
+						lineEnding.setSaved(file, diskEol, true);
+						file.markLoaded({ mtime });
 					} finally {
 						file.markChanged = true;
 					}

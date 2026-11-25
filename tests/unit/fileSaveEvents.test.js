@@ -2,6 +2,7 @@
 
 import { EditorSelection, EditorState } from "@codemirror/state";
 import tag from "html-tag-js";
+import lineEnding from "lib/lineEnding";
 import { afterEach, expect, it, vi } from "vitest";
 import { loadSourceModule } from "../helpers/loadSourceModule";
 
@@ -77,6 +78,7 @@ function setup() {
 				getIconForFile: () => "file",
 			},
 			"./config": { DEFAULT_FILE_SESSION: "default" },
+			"./lineEnding": lineEnding,
 			"./settings": { value: {}, on: vi.fn(), off: vi.fn() },
 			"./saveFile": write,
 		},
