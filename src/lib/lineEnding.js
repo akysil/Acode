@@ -37,4 +37,13 @@ export default {
 	choose(file, eol) {
 		choices.set(file, eol);
 	},
+	/**
+	 * Restores the state saveState stored for a tab.
+	 * @param {object} file
+	 * @param {{eol?: 'windows'|'unix'|null, savedEol?: 'windows'|'unix'|null}} record
+	 */
+	restore(file, { eol, savedEol }) {
+		if (savedEol !== undefined) savedEols.set(file, savedEol);
+		if (eol) choices.set(file, eol);
+	},
 };

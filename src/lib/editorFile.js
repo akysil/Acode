@@ -334,8 +334,6 @@ function maybeRecommendLanguageModeExtension(file, modeInfo) {
  * @property {boolean} [deletedFile] file do not exists at source
  * @property {'single' | 'tree'} [SAFMode] storage access framework mode
  * @property {string} [encoding] text encoding
- * @property {'windows'|'unix'} [eol] line ending used on save
- * @property {'windows'|'unix'|null} [savedEol] line ending of the file on disk
  * @property {object} [cursorPos] cursor position
  * @property {number} [scrollLeft] scroll left
  * @property {number} [scrollTop] scroll top
@@ -704,12 +702,12 @@ export default class EditorFile {
 			options?.text !== undefined ||
 			options?.isUnsaved !== undefined ||
 			this.#id === config.DEFAULT_FILE_SESSION;
-		if (options?.savedEol !== undefined) {
-			lineEnding.setSaved(this, options.savedEol);
+		if (!options?.uri) {
+			// Nothing on disk yet, so there is no line ending to keep.
+			lineEnding.setSaved(this, null);
 		} else if (options?.text !== undefined && !options.isUnsaved) {
 			lineEnding.setSaved(this, detectEol(options.text));
 		}
-		if (options?.eol) lineEnding.choose(this, options.eol);
 		this.isUnsaved = options?.isUnsaved ?? this.hasUnsavedChanges();
 
 		if (options?.encoding) {

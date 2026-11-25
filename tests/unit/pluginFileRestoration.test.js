@@ -212,7 +212,11 @@ function setup() {
 	};
 	const { default: restoreFiles } = loadSourceModule(
 		"src/lib/restoreFiles.js",
-		{ fileSystem: filesystem, "./editorFile": EditorFile },
+		{
+			fileSystem: filesystem,
+			"./editorFile": EditorFile,
+			"./lineEnding": lineEnding,
+		},
 	);
 	return {
 		AUTO_SAVE,
@@ -680,6 +684,27 @@ it("takes the line ending from an accepted reload and refuses to overwrite a lin
 	expect(g.cache.get(file.uri)).toBe("a\nb\n");
 });
 
+it("saves with the line ending of a reload accepted while the save reads the source", async () => {
+	const f = setup();
+	const { checkFiles } = loadEolHelpers(f);
+	f.cache.set("file:///local.js", "a\r\nb\r\n");
+	await f.restoreFiles([
+		{ id: "crlf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	f.cache.set(file.uri, "a\nb\n");
+	f.confirm.mockResolvedValue(true);
+	const read = f.read.getMockImplementation();
+	f.read.mockImplementationOnce(async (uri, encoding) => {
+		await checkFiles();
+		return read(uri, encoding);
+	});
+	expect(await file.save()).toBe(true);
+	expect(f.confirm).toHaveBeenCalledOnce();
+	expect(file.eol).toBe("unix");
+	expect(f.cache.get(file.uri)).toBe("a\nb\n");
+});
+
 it("keeps a pending line-ending switch across restarts and saves legacy tabs with the source line ending", async () => {
 	const f = setup();
 	const { persist } = loadEolHelpers(f);
@@ -767,6 +792,10 @@ it("keeps a pending line-ending switch across restarts and saves legacy tabs wit
 
 	// Switching the initial untitled tab makes it part of the session.
 	const untitled = new h.EditorFile();
+	const defaultId = untitled.id;
+	untitled.eol = "unix";
+	expect(untitled.isUnsaved).toBe(false);
+	expect(untitled.id).toBe(defaultId);
 	untitled.eol = "windows";
 	expect(untitled.isUnsaved).toBe(true);
 	const record = loadEolHelpers(h)

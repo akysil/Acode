@@ -121,14 +121,13 @@ async function saveFile(
 
 	try {
 		let sourceEol = null;
-		const savedEol = lineEnding.saved(file);
 		if (isSaveAs || newUrl) {
 			// A copy of a tab restored without line-ending info keeps the
 			// line ending of its source, when the source can be read.
 			if (
 				isSaveAs &&
 				file.uri &&
-				savedEol === undefined &&
+				lineEnding.saved(file) === undefined &&
 				!lineEnding.choice(file)
 			) {
 				try {
@@ -171,6 +170,8 @@ async function saveFile(
 			if (!isCurrent()) return false;
 			sourceEol = detectEol(sourceText);
 			// Text.eq ignores line breaks, so compare the line ending separately.
+			// Read it now: a reload may have replaced it during the read.
+			const savedEol = lineEnding.saved(file);
 			const sameEol = !sourceEol || !savedEol || sourceEol === savedEol;
 			let unchanged = sameEol && source.eq(file.session.doc);
 			if (!unchanged && baseline) {
@@ -208,6 +209,7 @@ async function saveFile(
 		const savedDoc = file.session?.doc || null;
 		const savedVersion = file.docVersion;
 		// A tab restored without line-ending info keeps the source's line ending.
+		const savedEol = lineEnding.saved(file);
 		const eol =
 			lineEnding.choice(file) ??
 			(savedEol === undefined ? sourceEol : savedEol) ??

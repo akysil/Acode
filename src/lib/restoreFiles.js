@@ -1,4 +1,5 @@
 import EditorFile from "./editorFile";
+import lineEnding from "./lineEnding";
 
 /**
  *
@@ -17,6 +18,7 @@ export default async function restoreFiles(files) {
 			emitUpdate: false,
 		};
 		const restoredFile = new EditorFile(file.filename, options);
+		lineEnding.restore(restoredFile, file);
 		const load = Promise.resolve(restoredFile.load?.());
 
 		if (file.uri && !/^(?:file|content):/i.test(file.uri)) {
