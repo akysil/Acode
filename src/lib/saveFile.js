@@ -158,7 +158,7 @@ async function saveFile(
 			let unchanged = sameEol && source.eq(file.session.doc);
 			if (!unchanged && baseline) {
 				unchanged = sameEol && source.eq(baseline);
-			} else if (!unchanged && file.savedMtime != null) {
+			} else if (!unchanged && sameEol && file.savedMtime != null) {
 				const stat = await fileOnDevice.stat?.().catch(() => null);
 				if (!isCurrent()) return false;
 				unchanged = helpers.getStatMtime(stat) === file.savedMtime;
@@ -192,7 +192,7 @@ async function saveFile(
 		const savedVersion = file.docVersion;
 		// A tab restored without line-ending info keeps the source's line ending.
 		const savedEol =
-			file.savedEol || file.eol !== "unix" ? file.eol : sourceEol || "unix";
+			file.savedEol === undefined ? sourceEol || "unix" : file.eol;
 		let data = getDocText(savedDoc);
 		if (savedEol === "windows") data = data.replace(/\n/g, "\r\n");
 		if (!isCurrent()) return false;

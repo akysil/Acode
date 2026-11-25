@@ -1,4 +1,5 @@
 import fsOperation from "fileSystem";
+import { detectEol } from "cm/editorUtils";
 import palette from "components/palette";
 import confirm from "dialogs/confirm";
 import encodings from "utils/encodings";
@@ -36,7 +37,7 @@ export async function reopenWithNewEncoding(encoding) {
 
 	file.encoding = encoding;
 	file.session.setValue(text);
-	file.isUnsaved = false;
+	file.markLoaded({ mtime: file.savedMtime, savedEol: detectEol(text) });
 	file.markChanged = false;
 	editor.moveCursorToPosition(cursorPosition);
 

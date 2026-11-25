@@ -110,6 +110,7 @@ function setup() {
 	const toast = vi.fn(),
 		log = vi.fn();
 	const confirm = vi.fn(async () => false);
+	const prompt = vi.fn(async () => "");
 	const error = vi.fn();
 	const helpers = {
 		normalizeMtime: (value) => value ?? null,
@@ -118,6 +119,7 @@ function setup() {
 		getIconForFile: () => "file",
 		getVirtualPath: (value) => value,
 		fixFilename: (value) => value,
+		uuid: () => "promoted",
 	};
 	const selectLocation = vi.fn(async () => ({
 		val: { url: "file:///export" },
@@ -130,7 +132,7 @@ function setup() {
 			"cm/editorUtils": { detectEol, getDocText: (doc) => doc.toString() },
 			"components/toast": toast,
 			"dialogs/confirm": confirm,
-			"dialogs/prompt": async () => "",
+			"dialogs/prompt": prompt,
 			"dialogs/select": {},
 			"lib/recents": {
 				select: selectLocation,
@@ -210,7 +212,9 @@ function setup() {
 	);
 	return {
 		AUTO_SAVE,
+		EditorFile,
 		confirm,
+		prompt,
 		error,
 		stat,
 		cache,
@@ -611,6 +615,17 @@ it("saves the opened line ending, writes both switched line endings, and keeps a
 	}
 	await checkFiles();
 	expect(f.confirm).not.toHaveBeenCalled();
+
+	// A switch made while the write is pending is kept after it completes.
+	file.eol = "unix";
+	f.write.mockImplementationOnce(async (uri, text) => {
+		file.eol = "windows";
+		f.cache.set(uri, text);
+	});
+	expect(await file.save()).toBe(true);
+	expect(f.cache.get(file.uri)).toBe("a\nb\nc\n");
+	expect(file.eol).toBe("windows");
+	expect(file.isUnsaved).toBe(true);
 });
 
 it("takes the line ending from an accepted reload and refuses to overwrite a line-ending-only change", async () => {
@@ -621,6 +636,7 @@ it("takes the line ending from an accepted reload and refuses to overwrite a lin
 		{ id: "crlf", uri: "file:///local.js", filename: "local.js" },
 	]);
 	const file = f.manager.files[0];
+	file.eol = "windows";
 	f.cache.set(file.uri, "a\nb\n");
 	f.confirm.mockResolvedValueOnce(true);
 	await checkFiles();
@@ -636,6 +652,26 @@ it("takes the line ending from an accepted reload and refuses to overwrite a lin
 	expect(await file.save()).toBe(false);
 	expect(f.confirm).toHaveBeenCalledTimes(2);
 	expect(f.cache.get(file.uri)).toBe("a\r\nb\r\nc\r\n");
+
+	// A matching mtime does not hide the change for a dirty cached tab.
+	const g = setup();
+	g.stat.mockResolvedValue({ modifiedDate: 5 });
+	g.cache.set(file.uri, "a\nb\n");
+	g.cache.set("file:///cache/dirty", "my edit\n");
+	await g.restoreFiles([
+		{
+			id: "dirty",
+			uri: file.uri,
+			filename: "local.js",
+			isUnsaved: true,
+			savedMtime: 5,
+			eol: "windows",
+			savedEol: "windows",
+		},
+	]);
+	expect(await g.manager.files[0].save()).toBe(false);
+	expect(g.confirm).toHaveBeenCalledOnce();
+	expect(g.cache.get(file.uri)).toBe("a\nb\n");
 });
 
 it("keeps a pending line-ending switch across restarts and saves legacy tabs with the source line ending", async () => {
@@ -682,6 +718,79 @@ it("keeps a pending line-ending switch across restarts and saves legacy tabs wit
 	expect(await legacy.save()).toBe(true);
 	expect(g.cache.get(file.uri)).toBe("a\r\nb\r\nc\r\n");
 	expect(legacy.eol).toBe("windows");
+	legacy.eol = "unix";
+	expect(await legacy.save()).toBe(true);
+	expect(g.cache.get(file.uri)).toBe("a\nb\nc\n");
+
+	// A choice on an older tab wins; Replace in Files text keeps the source's.
+	const h = setup();
+	h.cache.set(file.uri, "a\r\nb\r\n");
+	h.cache.set("file:///cache/legacy", "a\nb\n");
+	h.cache.set("file:///other.js", "a\nb\n");
+	await h.restoreFiles([
+		{ id: "legacy", uri: file.uri, filename: "local.js" },
+		{
+			id: "replaced",
+			uri: "file:///other.js",
+			filename: "other.js",
+			text: "x\r\ny\n",
+			isUnsaved: true,
+			savedMtime: 5,
+		},
+	]);
+	h.stat.mockResolvedValue({ modifiedDate: 5 });
+	h.manager.files[0].eol = "unix";
+	expect(await h.manager.files[0].save()).toBe(true);
+	expect(h.cache.get(file.uri)).toBe("a\nb\n");
+	expect(await h.manager.files[1].save()).toBe(true);
+	expect(h.cache.get("file:///other.js")).toBe("x\ny\n");
+
+	// Switching the initial untitled tab makes it part of the session.
+	const untitled = new h.EditorFile();
+	untitled.eol = "windows";
+	expect(untitled.isUnsaved).toBe(true);
+	const record = loadEolHelpers(h)
+		.persist()
+		.find((item) => item.id === untitled.id);
+	expect(record).toMatchObject({ eol: "windows" });
+});
+
+it("drops a pending line-ending switch when the file is reopened with another encoding", async () => {
+	const f = setup();
+	f.cache.set("file:///local.js", "a\nb\n");
+	await f.restoreFiles([
+		{ id: "lf", uri: "file:///local.js", filename: "local.js" },
+	]);
+	const file = f.manager.files[0];
+	await file.load();
+	file.eol = "windows";
+	const { reopenWithNewEncoding } = loadSourceModule(
+		"src/palettes/changeEncoding/index.js",
+		{
+			fileSystem: f.fs,
+			"cm/editorUtils": { detectEol },
+			"components/palette": vi.fn(),
+			"dialogs/confirm": async () => true,
+			"utils/encodings": {},
+		},
+		{
+			editorManager: {
+				...f.manager,
+				activeFile: file,
+				editor: {
+					getCursorPosition: () => ({}),
+					moveCursorToPosition: vi.fn(),
+				},
+			},
+			strings: { "change encoding": "" },
+		},
+	);
+	await reopenWithNewEncoding("utf-8");
+	expect(file.eol).toBe("unix");
+	expect(file.isUnsaved).toBe(false);
+	file.session.setValue("a\nb\nc\n");
+	expect(await file.save()).toBe(true);
+	expect(f.cache.get(file.uri)).toBe("a\nb\nc\n");
 });
 
 it("continues resume checks past unavailable, failing, and read-only HTTP providers", async () => {
